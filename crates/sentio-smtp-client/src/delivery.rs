@@ -569,22 +569,42 @@ where
         // Try each MX host in preference order.
         let mut last_error = None;
 
+        // Hard upper bound per MX attempt so no single await can hang the task.
+        // The individual SMTP command / handshake timeouts are stricter; this is
+        // a defensive backstop for any future await that lacks its own timeout.
+        let mx_attempt_timeout = std::time::Duration::from_secs(300);
+
         for mx_host in &mx_result.hosts {
-            match self
-                .try_mx_host(
+            let attempt = tokio::time::timeout(
+                mx_attempt_timeout,
+                self.try_mx_host(
                     mx_host, sender, recipients, message, &tls_req, dsn_ret, dsn_envid, dsn_notify,
                     dsn_orcpt,
-                )
-                .await
-            {
-                Ok(outcome) => return outcome,
-                Err(e) => {
+                ),
+            )
+            .await;
+
+            match attempt {
+                Ok(Ok(outcome)) => return outcome,
+                Ok(Err(e)) => {
                     warn!(
                         mx = %mx_host.hostname,
                         error = %e,
                         "MX host delivery failed, trying next"
                     );
                     last_error = Some(e.to_string());
+                }
+                Err(_) => {
+                    warn!(
+                        mx = %mx_host.hostname,
+                        timeout_secs = mx_attempt_timeout.as_secs(),
+                        "MX host delivery attempt timed out, trying next"
+                    );
+                    last_error = Some(format!(
+                        "MX {} attempt timed out after {}s",
+                        mx_host.hostname,
+                        mx_attempt_timeout.as_secs()
+                    ));
                 }
             }
         }
@@ -764,7 +784,25 @@ where
                         }
                     };
                     let (stream, _buf, conn_config, hostname) = conn.into_parts();
-                    match starttls_upgrade(stream, Arc::new(tls_config), &hostname).await {
+                    let tls_timeout = conn_config.command_timeout;
+                    let upgrade = match tokio::time::timeout(
+                        tls_timeout,
+                        starttls_upgrade(stream, Arc::new(tls_config), &hostname),
+                    )
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(_) => {
+                            return DeliveryOutcome::Deferred {
+                                response: "Relay STARTTLS handshake timeout".into(),
+                                remote_mta: host.to_string(),
+                                bounce_class: BounceClass::Soft,
+                                retry_count,
+                                next_retry_at: compute_next_retry(retry_count, &self.config),
+                            };
+                        }
+                    };
+                    match upgrade {
                         Ok((tls_stream, _version)) => {
                             let (mut tls_conn, _) = match SmtpConnection::new(
                                 tls_stream,
@@ -941,7 +979,14 @@ where
                     .map_err(|e| smtp_err(format!("TLS config error: {e}")))?;
                 let (stream, read_buf, conn_config, hostname) = conn.into_parts();
 
-                match starttls_upgrade(stream, Arc::new(tls_config), &hostname).await {
+                let tls_timeout = conn_config.command_timeout;
+                let upgrade = tokio::time::timeout(
+                    tls_timeout,
+                    starttls_upgrade(stream, Arc::new(tls_config), &hostname),
+                )
+                .await
+                .map_err(|_| smtp_err("STARTTLS handshake timeout"))?;
+                match upgrade {
                     Ok((tls_stream, _version)) => {
                         // RFC 3207: after STARTTLS, the server does NOT send a new greeting.
                         // Use from_upgraded to skip greeting read.
