@@ -1532,6 +1532,40 @@ pub async fn send_raw(
 // GET /v1/messages
 // ──────────────────────────────────────────────────────────────────────────────
 
+
+// ──────────────────────────────────────────────────────────────────────────────
+// GET /v1/me
+// ──────────────────────────────────────────────────────────────────────────────
+/// The caller's own identity: mailbox address for user (JWT) identities,
+/// tenant + scopes for service keys. Client UIs use this to populate the
+/// compose From field instead of guessing from message headers.
+#[utoipa::path(
+    get,
+    path = "/v1/me",
+    tag = "Messages",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, body = DataResponse<MeResponse>),
+    ),
+)]
+pub async fn get_me(auth: AuthContext) -> Result<impl IntoResponse, ApiError> {
+    Ok(data(MeResponse {
+        is_user: auth.is_user,
+        mailbox: auth.mailbox.as_ref().map(|m| m.address.clone()),
+        tenant_id: auth.tenant_id.0,
+        scopes: auth.scopes.clone(),
+    }))
+}
+
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct MeResponse {
+    pub is_user: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mailbox: Option<String>,
+    pub tenant_id: uuid::Uuid,
+    pub scopes: Vec<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/v1/messages",

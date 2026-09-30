@@ -273,8 +273,12 @@ pub fn router(state: AppState) -> Router {
         .route("/summary", get(errors::error_summary))
         .route("/{id}", get(errors::get_error));
 
+    let me_router = Router::new()
+        .route("/", get(messages::get_me));
+
     let authenticated_routes: Router<AppState> = Router::new()
         .nest("/v1/messages", messages_router)
+        .nest("/v1/me", me_router)
         .nest("/v1/domains", domains_router)
         .nest("/v1/webhooks", webhooks_router)
         .nest("/v1/queues", queues_router)

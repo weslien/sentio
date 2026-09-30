@@ -15,6 +15,7 @@ use utoipa::{Modify, OpenApi};
         crate::routes::messages::send_raw,
         crate::routes::messages::send_multipart,
         crate::routes::messages::list_messages,
+        crate::routes::messages::get_me,
         crate::routes::messages::get_message,
         crate::routes::messages::get_message_raw,
         crate::routes::messages::get_message_events,
