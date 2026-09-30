@@ -1265,11 +1265,16 @@ pub trait InboundRouteRepository: Send + Sync {
 
     fn update(
         &self,
+        tenant_id: TenantId,
         id: InboundRouteId,
         update: InboundRouteUpdate,
     ) -> impl Future<Output = Result<(), SentioError>> + Send;
 
-    fn delete(&self, id: InboundRouteId) -> impl Future<Output = Result<(), SentioError>> + Send;
+    fn delete(
+        &self,
+        tenant_id: TenantId,
+        id: InboundRouteId,
+    ) -> impl Future<Output = Result<(), SentioError>> + Send;
 }
 
 #[derive(Debug, Clone)]

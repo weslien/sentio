@@ -130,6 +130,11 @@ async fn main() {
         }
     };
 
+    // Refuse to start with the well-known bootstrap admin key active, BEFORE
+    // any listener binds — otherwise SMTP/API could accept the bootstrap
+    // credential during the startup window before the API-side check runs.
+    sentio_api::auth::warn_if_bootstrap_key_active(pg_pool.inner()).await;
+
     // ── KV backend (per [kv] backend) ─────────────────────────────────────
     let kv = match sentio_store::pool::connect_kv(&config.kv, &config.redis).await {
         Ok(r) => r,

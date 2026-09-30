@@ -136,6 +136,7 @@ impl InboundRouteRepository for PgInboundRouteRepository {
 
     async fn update(
         &self,
+        tenant_id: TenantId,
         id: InboundRouteId,
         update: InboundRouteUpdate,
     ) -> Result<(), SentioError> {
@@ -144,7 +145,7 @@ impl InboundRouteRepository for PgInboundRouteRepository {
             "UPDATE inbound_routes SET \
                 pattern = $1, match_type = $2, webhook_url = $3, priority = $4, \
                 llm_classify = $5, auto_respond = $6, auto_respond_config = $7 \
-             WHERE id = $8",
+             WHERE id = $8 AND tenant_id = $9",
             update.pattern,
             match_type_str,
             update.webhook_url,
@@ -153,6 +154,7 @@ impl InboundRouteRepository for PgInboundRouteRepository {
             update.auto_respond,
             update.auto_respond_config,
             id.0,
+            tenant_id.0,
         )
         .execute(&self.pool)
         .await
@@ -167,11 +169,15 @@ impl InboundRouteRepository for PgInboundRouteRepository {
         Ok(())
     }
 
-    async fn delete(&self, id: InboundRouteId) -> Result<(), SentioError> {
-        let result = sqlx::query!("DELETE FROM inbound_routes WHERE id = $1", id.0)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| SentioError::Database(e.to_string()))?;
+    async fn delete(&self, tenant_id: TenantId, id: InboundRouteId) -> Result<(), SentioError> {
+        let result = sqlx::query!(
+            "DELETE FROM inbound_routes WHERE id = $1 AND tenant_id = $2",
+            id.0,
+            tenant_id.0
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SentioError::Database(e.to_string()))?;
 
         if result.rows_affected() == 0 {
             return Err(SentioError::NotFound {

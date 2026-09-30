@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE inbound_routes SET pattern = $1, match_type = $2, webhook_url = $3, priority = $4, llm_classify = $5, auto_respond = $6, auto_respond_config = $7 WHERE id = $8 AND tenant_id = $9",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Bool",
+        "Bool",
+        "Jsonb",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a30809142ddb2c46593eedb14f6f4cfe697ed35ea913da9e2116cb7ce4722035"
+}

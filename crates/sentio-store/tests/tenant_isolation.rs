@@ -12,11 +12,12 @@
 
 use sentio_core::tenant::TenantId;
 use sentio_core::traits::{
-    ApiKeyRepository, NewOAuthClient, NewSmtpCredential, OAuthClientRepository,
-    SmtpCredentialRepository,
+    ApiKeyRepository, InboundRouteRepository, NewOAuthClient, NewSmtpCredential,
+    OAuthClientRepository, SmtpCredentialRepository,
 };
 use sentio_store::postgres::{
-    PgApiKeyRepository, PgOAuthClientRepository, PgSmtpCredentialRepository,
+    PgApiKeyRepository, PgInboundRouteRepository, PgOAuthClientRepository,
+    PgSmtpCredentialRepository,
 };
 
 async fn test_pool() -> Option<sqlx::PgPool> {
@@ -38,14 +39,14 @@ fn marker() -> String {
 
 async fn create_tenant(pool: &sqlx::PgPool) -> TenantId {
     let id = uuid::Uuid::new_v4();
-    sqlx::query!(
-        "INSERT INTO tenants (id, name) VALUES ($1, $2)",
-        id,
-        format!("iso-test-{}", id)
-    )
-    .execute(pool)
-    .await
-    .expect("insert tenant");
+    // Runtime (non-macro) query: this test target runs against a live
+    // DATABASE_URL and is not part of the .sqlx offline cache.
+    sqlx::query("INSERT INTO tenants (id, name) VALUES ($1, $2)")
+        .bind(id)
+        .bind(format!("iso-test-{}", id))
+        .execute(pool)
+        .await
+        .expect("insert tenant");
     TenantId(id)
 }
 
@@ -274,4 +275,102 @@ async fn api_key_create_scopes_to_explicit_tenant() {
         .revoke(tenant_b, created_b.id)
         .await
         .unwrap();
+}
+
+// ── Inbound routes ────────────────────────────────────────────────────────────
+
+async fn create_inbound_route(
+    pool: &sqlx::PgPool,
+    tenant: TenantId,
+    pattern: &str,
+) -> sentio_core::ids::InboundRouteId {
+    use sentio_core::inbound::InboundRouteMatchType;
+    use sentio_core::traits::NewInboundRoute;
+    let repo = PgInboundRouteRepository::new(pool.clone());
+    repo.create(NewInboundRoute {
+        tenant_id: tenant,
+        pattern: pattern.into(),
+        match_type: InboundRouteMatchType::Exact,
+        webhook_url: format!("https://{pattern}.example/hook"),
+        priority: 1,
+        llm_classify: false,
+        auto_respond: false,
+        auto_respond_config: None,
+    })
+    .await
+    .expect("create inbound route")
+}
+
+#[tokio::test]
+async fn inbound_route_update_cannot_cross_tenants() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+
+    let tenant_a = create_tenant(&pool).await;
+    let tenant_b = create_tenant(&pool).await;
+    let m = marker();
+
+    let route_b = create_inbound_route(&pool, tenant_b, &format!("{m}-b")).await;
+    let repo = PgInboundRouteRepository::new(pool.clone());
+
+    use sentio_core::inbound::InboundRouteMatchType;
+    use sentio_core::traits::InboundRouteUpdate;
+
+    // Tenant A tries to rewrite tenant B's route (the IDOR).
+    let err = repo
+        .update(
+            tenant_a,
+            route_b,
+            InboundRouteUpdate {
+                pattern: format!("{m}-hijacked"),
+                match_type: InboundRouteMatchType::Exact,
+                webhook_url: "https://attacker.example/hook".into(),
+                priority: 99,
+                llm_classify: false,
+                auto_respond: false,
+                auto_respond_config: None,
+            },
+        )
+        .await;
+    assert!(
+        err.is_err(),
+        "tenant A must NOT be able to update tenant B's inbound route"
+    );
+
+    // B's route is untouched.
+    let record = repo.get(route_b).await.expect("route still readable");
+    assert_eq!(
+        record.pattern,
+        format!("{m}-b"),
+        "pattern must be unchanged"
+    );
+}
+
+#[tokio::test]
+async fn inbound_route_delete_cannot_cross_tenants() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+
+    let tenant_a = create_tenant(&pool).await;
+    let tenant_b = create_tenant(&pool).await;
+    let m = marker();
+
+    let route_b = create_inbound_route(&pool, tenant_b, &format!("{m}-del")).await;
+    let repo = PgInboundRouteRepository::new(pool.clone());
+
+    // Tenant A tries to delete tenant B's route (the IDOR).
+    let err = repo.delete(tenant_a, route_b).await;
+    assert!(
+        err.is_err(),
+        "tenant A must NOT be able to delete tenant B's inbound route"
+    );
+
+    // B can still see and delete its own route.
+    let record = repo.get(route_b).await.expect("route still exists");
+    assert_eq!(record.tenant_id, tenant_b);
+    repo.delete(tenant_b, route_b)
+        .await
+        .expect("own delete works");
 }
