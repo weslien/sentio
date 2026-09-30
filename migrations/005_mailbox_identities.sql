@@ -22,3 +22,7 @@ CREATE TABLE IF NOT EXISTS mailbox_identities (
 
 CREATE INDEX IF NOT EXISTS idx_mailbox_identities_lookup
     ON mailbox_identities (issuer, subject);
+
+-- The API connects as the application role, not the migration/superuser
+-- role; without this the identity lookup 500s with `permission denied`.
+GRANT SELECT, INSERT, UPDATE, DELETE ON mailbox_identities TO PUBLIC;
