@@ -154,6 +154,14 @@ pub async fn auth_middleware(
 /// key (`sentio_bootstrap_admin_CHANGE_ME`) so a fresh install is usable. The
 /// README instructs operators to rotate it; this check makes a forgotten
 /// rotation impossible to miss at startup.
+///
+/// Fails closed: an infrastructure error while checking (e.g. DB unavailable)
+/// is treated as "bootstrap key status unknown" and refuses to start, so a
+/// transient outage cannot silently defeat the gate. The recovery escape hatch
+/// is `SENTIO_ALLOW_BOOTSTRAP_KEY=1` (documented in README; the password-less
+/// bootstrap key cannot be rotated via the API once the server refuses to
+/// bind, so manual rotation happens via SQL — see the README section on the
+/// bootstrap key).
 pub async fn warn_if_bootstrap_key_active(pool: &sqlx::PgPool) {
     const BOOTSTRAP_KEY: &str = "sentio_bootstrap_admin_CHANGE_ME";
 
@@ -181,16 +189,32 @@ pub async fn warn_if_bootstrap_key_active(pool: &sqlx::PgPool) {
                 key_prefix = %record.key_prefix,
                 "refusing to start: the bootstrap admin API key shipped in \
                  migrations/002_bootstrap.sql is still active and publicly known \
-                 (full wildcard scope over every tenant). Rotate it now via \
-                 POST /v1/tenants/{}/api-keys and delete the bootstrap key, or \
-                 set SENTIO_ALLOW_BOOTSTRAP_KEY=1 to start anyway for recovery",
+                 (full wildcard scope over every tenant). Rotate it manually \
+                 (see README: 'bootstrap key') or set SENTIO_ALLOW_BOOTSTRAP_KEY=1 \
+                 to start anyway for recovery (tenant: {})",
                 record.tenant_id
             );
             std::process::exit(1);
         }
         Err(sentio_core::error::SentioError::Auth(_)) => {}
         Err(e) => {
-            tracing::debug!(error = %e, "could not check bootstrap key status");
+            // Fail closed: we cannot prove the bootstrap key is inactive, so
+            // the gate must hold (exit(1) is safe here — this runs in main()
+            // before any listener binds).
+            tracing::error!(
+                error = %e,
+                "refusing to start: could not verify whether the bootstrap \
+                 admin API key (migrations/002_bootstrap.sql) is active. Fix \
+                 the database access, or set SENTIO_ALLOW_BOOTSTRAP_KEY=1 to \
+                 start anyway for recovery"
+            );
+            if std::env::var("SENTIO_ALLOW_BOOTSTRAP_KEY").as_deref() == Ok("1") {
+                tracing::warn!(
+                    "continuing with unknown bootstrap-key status: SENTIO_ALLOW_BOOTSTRAP_KEY=1"
+                );
+                return;
+            }
+            std::process::exit(1);
         }
     }
 }

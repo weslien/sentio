@@ -119,6 +119,29 @@ Rotate this key before exposing the host to anything untrusted - it has
 wildcard (`*`) scope. Create a replacement via
 `POST /v1/tenants/{id}/api-keys`, then delete the bootstrap one.
 
+**The server refuses to start while this key is active** (and refuses to start
+if its status cannot be verified, e.g. the database is unreachable). To start
+anyway - for recovery or single-user evaluation - set:
+
+```bash
+SENTIO_ALLOW_BOOTSTRAP_KEY=1
+```
+
+If the shutdown catches you before rotation, rotate manually via SQL, then
+start normally:
+
+```sql
+-- psql as the Sentio DB user. Create a replacement key first:
+--   key_hash is hex(sha256(raw_token)) - generate your token, hash it, insert,
+--   then delete the bootstrap row:
+INSERT INTO api_keys (id, tenant_id, key_hash, key_prefix, name, scopes)
+VALUES (gen_random_uuid(),
+        '00000000-0000-0000-0000-000000000001',
+        '<hex sha256 of your new token>',
+        'admin', 'Rotated Admin', '{*}');
+DELETE FROM api_keys WHERE key_prefix = 'sentio_boot';
+```
+
 ### Ports
 
 | Port | Purpose | Notes |

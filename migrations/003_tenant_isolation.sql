@@ -38,6 +38,9 @@ BEGIN
         GROUP BY username
         HAVING COUNT(DISTINCT tenant_id) > 1
     LOOP
+        -- BREAKING (documented in README): renamed usernames stop
+        -- authenticating until SMTP clients are updated to the new value.
+        RAISE NOTICE 'migration 003: renaming duplicate smtp credential username % (prev name will no longer authenticate)', dup.username;
         UPDATE smtp_credentials
         SET username = 'migration_003_' || tenant_id::text || '.' || username
         WHERE username = dup.username;

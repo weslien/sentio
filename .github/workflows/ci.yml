@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: "true"
+
+jobs:
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: sentio
+          POSTGRES_PASSWORD: sentio
+          POSTGRES_DB: sentio
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://sentio:sentio@localhost:5432/sentio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install sqlx-cli
+        # Needed to apply migrations before the tests that need a live schema.
+        run: cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features rustls,postgres
+      - name: Apply migrations
+        run: sqlx migrate run
+      - name: Workspace tests
+        run: cargo test --workspace --all-targets
+      - name: Tenant-isolation regression suite (explicit)
+        run: cargo test -p sentio-store --test tenant_isolation
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check

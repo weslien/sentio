@@ -323,10 +323,7 @@ pub fn router(state: AppState) -> Router {
 /// session's tenant. The path tenant is client-controlled and must never
 /// be trusted for scoping — cross-tenant access is a 404 so existence of
 /// another tenant's resources is not leaked.
-pub(crate) fn ensure_tenant_match(
-    auth: &AuthContext,
-    path_tenant: uuid::Uuid,
-) -> Result<(), ApiError> {
+pub fn ensure_tenant_match(auth: &AuthContext, path_tenant: uuid::Uuid) -> Result<(), ApiError> {
     if auth.tenant_id.0 != path_tenant {
         return Err(ApiError::NotFound("tenant".into()));
     }

@@ -60,7 +60,18 @@ impl SmtpCredentialRepository for PgSmtpCredentialRepository {
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| SentioError::Database(e.to_string()))?;
+        .map_err(|e| match &e {
+            // Unique-violation on the globally-unique username: another tenant
+            // (or this one) already holds it. Surface as a 409 rather than an
+            // opaque 500 so API callers can distinguish contention from bugs.
+            sqlx::Error::Database(db) if db.is_unique_violation() => {
+                SentioError::Conflict(format!(
+                    "SMTP credential username {:?} is already taken (globally unique)",
+                    cred.username
+                ))
+            }
+            _ => SentioError::Database(e.to_string()),
+        })?;
 
         Ok(SmtpCredentialId(row.id))
     }

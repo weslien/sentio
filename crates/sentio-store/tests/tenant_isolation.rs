@@ -50,6 +50,17 @@ async fn create_tenant(pool: &sqlx::PgPool) -> TenantId {
     TenantId(id)
 }
 
+/// Removes the tenant row created by a test so repeated runs against the same
+/// database don't accumulate fixtures. Lenient by design: cleanup failures
+/// must not mask the actual assertion result (tests delete the entities they
+/// created first; remaining children go with the tenant row via FK cascade).
+async fn cleanup_tenant(pool: &sqlx::PgPool, tenant: TenantId) {
+    let _ = sqlx::query("DELETE FROM tenants WHERE id = $1")
+        .bind(tenant.0)
+        .execute(pool)
+        .await;
+}
+
 async fn create_smtp_credential(
     repo: &PgSmtpCredentialRepository,
     tenant: TenantId,
@@ -110,6 +121,8 @@ async fn revoke_api_key_cannot_cross_tenants() {
         .revoke(tenant_b, key_b.id)
         .await
         .expect("own-tenant revoke must succeed");
+    cleanup_tenant(&pool, tenant_a).await;
+    cleanup_tenant(&pool, tenant_b).await;
 }
 
 #[tokio::test]
@@ -146,6 +159,8 @@ async fn smtp_credential_mutations_cannot_cross_tenants() {
     repo.delete(tenant_b, cred_b)
         .await
         .expect("own-tenant delete must succeed");
+    cleanup_tenant(&pool, tenant_a).await;
+    cleanup_tenant(&pool, tenant_b).await;
 }
 
 #[tokio::test]
@@ -176,6 +191,8 @@ async fn smtp_username_globally_unique_across_tenants() {
     // Cleanup.
     let id_a = repo.lookup(&format!("{m}-dup")).await.unwrap().id;
     repo.delete(tenant_a, id_a).await.unwrap();
+    cleanup_tenant(&pool, tenant_a).await;
+    cleanup_tenant(&pool, tenant_b).await;
 }
 
 #[tokio::test]
@@ -217,6 +234,8 @@ async fn oauth_client_mutations_cannot_cross_tenants() {
     repo.delete(tenant_b, client_b)
         .await
         .expect("own-tenant delete must succeed");
+    cleanup_tenant(&pool, tenant_a).await;
+    cleanup_tenant(&pool, tenant_b).await;
 }
 
 // NOTE (handler-layer coverage): the create-IDOR family found in review —
@@ -275,6 +294,8 @@ async fn api_key_create_scopes_to_explicit_tenant() {
         .revoke(tenant_b, created_b.id)
         .await
         .unwrap();
+    cleanup_tenant(&pool, tenant_a).await;
+    cleanup_tenant(&pool, tenant_b).await;
 }
 
 // ── Inbound routes ────────────────────────────────────────────────────────────
@@ -345,6 +366,8 @@ async fn inbound_route_update_cannot_cross_tenants() {
         format!("{m}-b"),
         "pattern must be unchanged"
     );
+    cleanup_tenant(&pool, tenant_a).await;
+    cleanup_tenant(&pool, tenant_b).await;
 }
 
 #[tokio::test]
@@ -373,4 +396,6 @@ async fn inbound_route_delete_cannot_cross_tenants() {
     repo.delete(tenant_b, route_b)
         .await
         .expect("own delete works");
+    cleanup_tenant(&pool, tenant_a).await;
+    cleanup_tenant(&pool, tenant_b).await;
 }

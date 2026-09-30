@@ -88,6 +88,10 @@ pub enum SentioError {
 
     #[error("{entity} not found: {id}")]
     NotFound { entity: &'static str, id: String },
+    #[error("conflict: {0}")]
+    /// The request conflicts with existing state (e.g. a globally-unique
+    /// username already taken by another tenant). Maps to HTTP 409.
+    Conflict(String),
 
     #[error("validation error: {0}")]
     Validation(String),
@@ -110,6 +114,7 @@ impl SentioError {
             SentioError::Auth(_) => "auth",
             SentioError::RateLimit { .. } => "rate_limit",
             SentioError::NotFound { .. } => "not_found",
+            SentioError::Conflict(_) => "conflict",
             SentioError::Validation(_) => "validation",
             SentioError::Internal(_) => "internal",
         }

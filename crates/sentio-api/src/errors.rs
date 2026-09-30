@@ -15,6 +15,7 @@ pub enum ApiError {
     Validation(String),
     Auth(String),
     RateLimit(String),
+    Conflict(String),
     Internal(String),
 }
 
@@ -36,6 +37,7 @@ impl IntoResponse for ApiError {
             ApiError::Validation(msg) => (StatusCode::UNPROCESSABLE_ENTITY, "validation", msg),
             ApiError::Auth(msg) => (StatusCode::UNAUTHORIZED, "auth", msg),
             ApiError::RateLimit(msg) => (StatusCode::TOO_MANY_REQUESTS, "rate_limit", msg),
+            ApiError::Conflict(msg) => (StatusCode::CONFLICT, "conflict", msg),
             ApiError::Internal(msg) => {
                 tracing::error!(error = %msg, "internal server error");
                 (
@@ -64,6 +66,7 @@ impl From<SentioError> for ApiError {
                 ApiError::NotFound(format!("{entity} not found: {id}"))
             }
             SentioError::Validation(msg) => ApiError::Validation(msg),
+            SentioError::Conflict(msg) => ApiError::Conflict(msg),
             SentioError::Auth(msg) => ApiError::Auth(msg),
             SentioError::RateLimit { key } => {
                 ApiError::RateLimit(format!("rate limit exceeded: {key}"))
