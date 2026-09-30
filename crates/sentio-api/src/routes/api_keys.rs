@@ -150,8 +150,11 @@ pub async fn revoke_api_key(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require_scope("admin:api_keys:write")?;
 
+    // Use the authenticated session's tenant, not the path parameter:
+    // the path value is client-controlled and was previously ignored,
+    // letting an admin of tenant A revoke tenant B's keys (cross-tenant IDOR).
     let repo = PgApiKeyRepository::new(state.pool.clone());
-    repo.revoke(ApiKeyId(id)).await?;
+    repo.revoke(auth.tenant_id, ApiKeyId(id)).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -232,11 +232,13 @@ pub async fn revoke_oauth_client(
     let repo = PgOAuthClientRepository::new(state.pool.clone());
     let record = repo.get(OAuthClientId(id)).await?;
 
+    // Check the authenticated session's tenant (defense in depth; the
+    // repository layer also enforces the tenant scope on mutate).
     if record.tenant_id != auth.tenant_id {
         return Err(ApiError::NotFound("oauth_client".into()));
     }
 
-    repo.revoke(OAuthClientId(id)).await?;
+    repo.revoke(auth.tenant_id, OAuthClientId(id)).await?;
 
     let updated = repo.get(OAuthClientId(id)).await?;
     Ok(data(OAuthClientResponse::from(updated)))
@@ -268,10 +270,12 @@ pub async fn delete_oauth_client(
     let repo = PgOAuthClientRepository::new(state.pool.clone());
     let record = repo.get(OAuthClientId(id)).await?;
 
+    // Check the authenticated session's tenant (defense in depth; the
+    // repository layer also enforces the tenant scope on delete).
     if record.tenant_id != auth.tenant_id {
         return Err(ApiError::NotFound("oauth_client".into()));
     }
 
-    repo.delete(OAuthClientId(id)).await?;
+    repo.delete(auth.tenant_id, OAuthClientId(id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }

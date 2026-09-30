@@ -66,6 +66,11 @@ impl SmtpCredentialRepository for PgSmtpCredentialRepository {
     }
 
     async fn lookup(&self, username: &str) -> Result<SmtpCredentialRecord, SentioError> {
+        // Deliberately NOT scoped by tenant: SMTP AUTH has no tenant prior to
+        // authentication — this lookup is what establishes it (the record's
+        // tenant_id flows into the authenticated session). Cross-tenant
+        // ambiguity is prevented by making `username` globally unique in
+        // migration 003 instead of `UNIQUE(tenant_id, username)`.
         let row = sqlx::query!(
             "SELECT id, tenant_id, username, password_hash, mechanisms, \
                     scram_stored_key, scram_server_key, scram_salt, scram_iterations, enabled \
@@ -127,11 +132,19 @@ impl SmtpCredentialRepository for PgSmtpCredentialRepository {
             .collect())
     }
 
-    async fn update_enabled(&self, id: SmtpCredentialId, enabled: bool) -> Result<(), SentioError> {
+    async fn update_enabled(
+        &self,
+        tenant_id: TenantId,
+        id: SmtpCredentialId,
+        enabled: bool,
+    ) -> Result<(), SentioError> {
+        // Scope to the authenticated tenant: without the filter an admin of
+        // tenant A could disable tenant B's SMTP credentials by guessing ids.
         let result = sqlx::query!(
-            "UPDATE smtp_credentials SET enabled = $1 WHERE id = $2",
+            "UPDATE smtp_credentials SET enabled = $1 WHERE id = $2 AND tenant_id = $3",
             enabled,
             id.0,
+            tenant_id.0,
         )
         .execute(&self.pool)
         .await
@@ -146,11 +159,17 @@ impl SmtpCredentialRepository for PgSmtpCredentialRepository {
         Ok(())
     }
 
-    async fn delete(&self, id: SmtpCredentialId) -> Result<(), SentioError> {
-        let result = sqlx::query!("DELETE FROM smtp_credentials WHERE id = $1", id.0)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| SentioError::Database(e.to_string()))?;
+    async fn delete(&self, tenant_id: TenantId, id: SmtpCredentialId) -> Result<(), SentioError> {
+        // Scope to the authenticated tenant: without the filter an admin of
+        // tenant A could delete tenant B's SMTP credentials by guessing ids.
+        let result = sqlx::query!(
+            "DELETE FROM smtp_credentials WHERE id = $1 AND tenant_id = $2",
+            id.0,
+            tenant_id.0,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SentioError::Database(e.to_string()))?;
 
         if result.rows_affected() == 0 {
             return Err(SentioError::NotFound {

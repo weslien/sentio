@@ -892,7 +892,15 @@ pub trait ApiKeyRepository: Send + Sync {
         tenant_id: TenantId,
     ) -> impl Future<Output = Result<Vec<ApiKeyRecord>, SentioError>> + Send;
 
-    fn revoke(&self, id: ApiKeyId) -> impl Future<Output = Result<(), SentioError>> + Send;
+    /// Revoke (delete) an API key. Scoped to `tenant_id`: the caller must
+    /// pass the tenant from the authenticated session, never from the URL
+    /// path alone, so administrators of one tenant cannot revoke another
+    /// tenant's keys (cross-tenant IDOR).
+    fn revoke(
+        &self,
+        tenant_id: TenantId,
+        id: ApiKeyId,
+    ) -> impl Future<Output = Result<(), SentioError>> + Send;
 }
 
 #[derive(Debug, Clone)]
@@ -922,6 +930,11 @@ pub trait SmtpCredentialRepository: Send + Sync {
     ) -> impl Future<Output = Result<SmtpCredentialId, SentioError>> + Send;
 
     /// Look up an enabled credential by username (used during SMTP AUTH).
+    /// Deliberately NOT scoped by tenant: SMTP AUTH has no tenant prior to
+    /// authentication — this lookup is what *establishes* the tenant
+    /// (`record.tenant_id`). Cross-tenant safety therefore relies on
+    /// `smtp_credentials.username` being globally unique (migration 003);
+    /// per-tenant username collisions are rejected at the database.
     fn lookup(
         &self,
         username: &str,
@@ -932,13 +945,20 @@ pub trait SmtpCredentialRepository: Send + Sync {
         tenant_id: TenantId,
     ) -> impl Future<Output = Result<Vec<SmtpCredentialRecord>, SentioError>> + Send;
 
+    /// Enable/disable a credential, scoped to `tenant_id` (cross-tenant IDOR).
     fn update_enabled(
         &self,
+        tenant_id: TenantId,
         id: SmtpCredentialId,
         enabled: bool,
     ) -> impl Future<Output = Result<(), SentioError>> + Send;
 
-    fn delete(&self, id: SmtpCredentialId) -> impl Future<Output = Result<(), SentioError>> + Send;
+    /// Delete a credential, scoped to `tenant_id` (cross-tenant IDOR).
+    fn delete(
+        &self,
+        tenant_id: TenantId,
+        id: SmtpCredentialId,
+    ) -> impl Future<Output = Result<(), SentioError>> + Send;
 }
 
 #[derive(Debug, Clone)]
@@ -1314,9 +1334,19 @@ pub trait OAuthClientRepository: Send + Sync {
         tenant_id: TenantId,
     ) -> impl Future<Output = Result<Vec<OAuthClientRecord>, SentioError>> + Send;
 
-    fn revoke(&self, id: OAuthClientId) -> impl Future<Output = Result<(), SentioError>> + Send;
+    /// Revoke an OAuth client, scoped to `tenant_id` (cross-tenant IDOR).
+    fn revoke(
+        &self,
+        tenant_id: TenantId,
+        id: OAuthClientId,
+    ) -> impl Future<Output = Result<(), SentioError>> + Send;
 
-    fn delete(&self, id: OAuthClientId) -> impl Future<Output = Result<(), SentioError>> + Send;
+    /// Delete an OAuth client, scoped to `tenant_id` (cross-tenant IDOR).
+    fn delete(
+        &self,
+        tenant_id: TenantId,
+        id: OAuthClientId,
+    ) -> impl Future<Output = Result<(), SentioError>> + Send;
 }
 
 #[derive(Debug, Clone)]

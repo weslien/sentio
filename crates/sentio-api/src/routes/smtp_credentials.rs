@@ -234,8 +234,10 @@ pub async fn update_smtp_credential_enabled(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require_scope("admin:smtp_credentials:write")?;
 
+    // Use the authenticated session's tenant, not the (previously ignored)
+    // path parameter, so admins cannot mutate another tenant's credentials.
     let repo = PgSmtpCredentialRepository::new(state.pool.clone());
-    repo.update_enabled(SmtpCredentialId(id), body.enabled)
+    repo.update_enabled(auth.tenant_id, SmtpCredentialId(id), body.enabled)
         .await?;
 
     Ok(StatusCode::NO_CONTENT)
@@ -266,8 +268,10 @@ pub async fn delete_smtp_credential(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require_scope("admin:smtp_credentials:write")?;
 
+    // Use the authenticated session's tenant, not the (previously ignored)
+    // path parameter, so admins cannot delete another tenant's credentials.
     let repo = PgSmtpCredentialRepository::new(state.pool.clone());
-    repo.delete(SmtpCredentialId(id)).await?;
+    repo.delete(auth.tenant_id, SmtpCredentialId(id)).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

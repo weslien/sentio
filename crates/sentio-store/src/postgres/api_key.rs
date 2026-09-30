@@ -101,11 +101,17 @@ impl ApiKeyRepository for PgApiKeyRepository {
             .collect())
     }
 
-    async fn revoke(&self, id: ApiKeyId) -> Result<(), SentioError> {
-        let result = sqlx::query!("DELETE FROM api_keys WHERE id = $1", id.0)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| SentioError::Database(e.to_string()))?;
+    async fn revoke(&self, tenant_id: TenantId, id: ApiKeyId) -> Result<(), SentioError> {
+        // Scope the delete to the authenticated tenant so an admin of one
+        // tenant cannot revoke another tenant's keys by enumerating UUIDs.
+        let result = sqlx::query!(
+            "DELETE FROM api_keys WHERE id = $1 AND tenant_id = $2",
+            id.0,
+            tenant_id.0,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SentioError::Database(e.to_string()))?;
 
         if result.rows_affected() == 0 {
             return Err(SentioError::NotFound {

@@ -164,10 +164,13 @@ impl OAuthClientRepository for PgOAuthClientRepository {
             .collect()
     }
 
-    async fn revoke(&self, id: OAuthClientId) -> Result<(), SentioError> {
+    async fn revoke(&self, tenant_id: TenantId, id: OAuthClientId) -> Result<(), SentioError> {
+        // Scope to the authenticated tenant: without the filter an admin of
+        // tenant A could revoke tenant B's OAuth clients by guessing ids.
         let result = sqlx::query!(
-            "UPDATE oauth_clients SET status = 'revoked' WHERE id = $1",
+            "UPDATE oauth_clients SET status = 'revoked' WHERE id = $1 AND tenant_id = $2",
             id.0,
+            tenant_id.0,
         )
         .execute(&self.pool)
         .await
@@ -182,11 +185,17 @@ impl OAuthClientRepository for PgOAuthClientRepository {
         Ok(())
     }
 
-    async fn delete(&self, id: OAuthClientId) -> Result<(), SentioError> {
-        let result = sqlx::query!("DELETE FROM oauth_clients WHERE id = $1", id.0)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| SentioError::Database(e.to_string()))?;
+    async fn delete(&self, tenant_id: TenantId, id: OAuthClientId) -> Result<(), SentioError> {
+        // Scope to the authenticated tenant: without the filter an admin of
+        // tenant A could delete tenant B's OAuth clients by guessing ids.
+        let result = sqlx::query!(
+            "DELETE FROM oauth_clients WHERE id = $1 AND tenant_id = $2",
+            id.0,
+            tenant_id.0,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| SentioError::Database(e.to_string()))?;
 
         if result.rows_affected() == 0 {
             return Err(SentioError::NotFound {

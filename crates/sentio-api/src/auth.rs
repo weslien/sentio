@@ -166,13 +166,27 @@ pub async fn warn_if_bootstrap_key_active(pool: &sqlx::PgPool) {
     let api_key_repo = PgApiKeyRepository::new(pool.clone());
     match api_key_repo.verify(&key_hash).await {
         Ok(record) => {
-            tracing::warn!(
+            if std::env::var("SENTIO_ALLOW_BOOTSTRAP_KEY").as_deref() == Ok("1") {
+                tracing::warn!(
+                    key_prefix = %record.key_prefix,
+                    "the bootstrap admin API key shipped in migrations/002_bootstrap.sql \
+                     is still active and publicly known. Running only because \
+                     SENTIO_ALLOW_BOOTSTRAP_KEY=1; rotate it now via \
+                     POST /v1/tenants/{}/api-keys, then delete the bootstrap key",
+                    record.tenant_id
+                );
+                return;
+            }
+            tracing::error!(
                 key_prefix = %record.key_prefix,
-                "the bootstrap admin API key shipped in migrations/002_bootstrap.sql \
-                 is still active and publicly known - rotate it now via \
-                 POST /v1/tenants/{}/api-keys, then delete the bootstrap key",
+                "refusing to start: the bootstrap admin API key shipped in \
+                 migrations/002_bootstrap.sql is still active and publicly known \
+                 (full wildcard scope over every tenant). Rotate it now via \
+                 POST /v1/tenants/{}/api-keys and delete the bootstrap key, or \
+                 set SENTIO_ALLOW_BOOTSTRAP_KEY=1 to start anyway for recovery",
                 record.tenant_id
             );
+            std::process::exit(1);
         }
         Err(sentio_core::error::SentioError::Auth(_)) => {}
         Err(e) => {
