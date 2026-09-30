@@ -217,3 +217,61 @@ async fn oauth_client_mutations_cannot_cross_tenants() {
         .await
         .expect("own-tenant delete must succeed");
 }
+
+// NOTE (handler-layer coverage): the create-IDOR family found in review —
+// create_api_key / create_smtp_credential minting resources under the
+// client-controlled path tenant — is closed by the `ensure_tenant_match`
+// handler guard (404 unless path tenant == auth.tenant_id), which is
+// exercised by the live post-deploy verification (two tenants, mismatched
+// path, expect 404) rather than by these repo-layer tests.
+
+#[tokio::test]
+async fn api_key_create_scopes_to_explicit_tenant() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+
+    let tenant_a = create_tenant(&pool).await;
+    let tenant_b = create_tenant(&pool).await;
+    let m = marker();
+
+    // "Attacker" creates a key naming tenant B as the target.
+    // create() is explicit (not path-derived) at the repo layer; the
+    // handler guard is what prevents cross-tenant creation. Repo layer
+    // must still bind the key to the tenant it is told — i.e. there is
+    // no implicit "current tenant" the handler could have meant.
+    let created_b = PgApiKeyRepository::new(pool.clone())
+        .create(
+            tenant_b,
+            &format!("{m}-created-for-b"),
+            &["messages:read".into()],
+        )
+        .await
+        .expect("create");
+
+    // The key must list under tenant B, never tenant A.
+    let in_a = PgApiKeyRepository::new(pool.clone())
+        .list_by_tenant(tenant_a)
+        .await
+        .unwrap()
+        .iter()
+        .any(|k| k.id == created_b.id);
+    assert!(
+        !in_a,
+        "key created for tenant B must not list under tenant A"
+    );
+
+    let in_b = PgApiKeyRepository::new(pool.clone())
+        .list_by_tenant(tenant_b)
+        .await
+        .unwrap()
+        .iter()
+        .any(|k| k.id == created_b.id);
+    assert!(in_b, "key created for tenant B must list under tenant B");
+
+    // Cleanup.
+    PgApiKeyRepository::new(pool.clone())
+        .revoke(tenant_b, created_b.id)
+        .await
+        .unwrap();
+}

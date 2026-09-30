@@ -12,9 +12,9 @@
 -- use tenant-namespaced usernames (e.g. "tenant-slug.bot@domain") when the
 -- same human-readable name is wanted in two tenants.
 
--- Drop the per-tenant uniqueness and enforce global uniqueness instead.
--- If duplicate usernames already exist in different tenants this fails;
--- rename existing offenders deterministically first.
+-- Guard the rename below against pre-existing literal '<uuid>.<name>' rows
+-- colliding with a renamed duplicate (unlikely; failure rolls back this
+-- file's transaction atomically and the operator resolves manually).
 DO $$
 DECLARE
     dup RECORD;
@@ -34,7 +34,7 @@ BEGIN
 END $$;
 
 ALTER TABLE smtp_credentials
-    DROP CONSTRAINT smtp_credentials_tenant_id_username_key;
+    DROP CONSTRAINT IF EXISTS smtp_credentials_tenant_id_username_key;
 
 ALTER TABLE smtp_credentials
     ADD CONSTRAINT smtp_credentials_username_key UNIQUE (username);

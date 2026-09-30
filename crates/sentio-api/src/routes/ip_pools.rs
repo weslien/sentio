@@ -407,6 +407,9 @@ pub async fn list_tenant_pools(
     Path(tenant_id): Path<uuid::Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require_scope("admin:ip_pools:read")?;
+    // The path tenant is client-controlled: only the authenticated
+    // session tenant may be addressed.
+    ensure_tenant_match(&auth, tenant_id)?;
 
     let repo = PgTenantIpAssignmentRepository::new(state.pool.clone());
     let records = repo.list_by_tenant(TenantId(tenant_id)).await?;
@@ -440,6 +443,9 @@ pub async fn assign_ip_pool(
     Json(body): Json<AssignIpPoolRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require_scope("admin:ip_pools:write")?;
+    // The path tenant is client-controlled: only the authenticated
+    // session tenant may be addressed.
+    ensure_tenant_match(&auth, tenant_id)?;
 
     let repo = PgTenantIpAssignmentRepository::new(state.pool.clone());
     repo.assign(
@@ -481,6 +487,9 @@ pub async fn update_assignment_priority(
     Json(body): Json<UpdateAssignmentPriorityRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require_scope("admin:ip_pools:write")?;
+    // The path tenant is client-controlled: only the authenticated
+    // session tenant may be addressed.
+    ensure_tenant_match(&auth, tenant_id)?;
 
     let repo = PgTenantIpAssignmentRepository::new(state.pool.clone());
     repo.update_priority(TenantId(tenant_id), IpPoolId(pool_id), body.priority)
@@ -516,10 +525,26 @@ pub async fn unassign_ip_pool(
     Path((tenant_id, pool_id)): Path<(uuid::Uuid, uuid::Uuid)>,
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require_scope("admin:ip_pools:write")?;
+    // The path tenant is client-controlled: only the authenticated
+    // session tenant may be addressed.
+    ensure_tenant_match(&auth, tenant_id)?;
 
     let repo = PgTenantIpAssignmentRepository::new(state.pool.clone());
     repo.unassign(TenantId(tenant_id), IpPoolId(pool_id))
         .await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+/// Reject requests whose path tenant differs from the authenticated
+/// session's tenant. The path tenant is client-controlled and must never
+/// be trusted for scoping — cross-tenant access is a 404 so existence of
+/// another tenant's resources is not leaked.
+pub(crate) fn ensure_tenant_match(
+    auth: &AuthContext,
+    path_tenant: uuid::Uuid,
+) -> Result<(), ApiError> {
+    if auth.tenant_id.0 != path_tenant {
+        return Err(ApiError::NotFound("tenant".into()));
+    }
+    Ok(())
 }
