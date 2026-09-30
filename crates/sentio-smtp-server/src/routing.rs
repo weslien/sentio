@@ -961,12 +961,17 @@ mod engine_tests {
         }
         async fn update(
             &self,
+            _tenant_id: TenantId,
             _id: InboundRouteId,
             _update: InboundRouteUpdate,
         ) -> Result<(), SentioError> {
             unimplemented!()
         }
-        async fn delete(&self, _id: InboundRouteId) -> Result<(), SentioError> {
+        async fn delete(
+            &self,
+            _tenant_id: TenantId,
+            _id: InboundRouteId,
+        ) -> Result<(), SentioError> {
             unimplemented!()
         }
     }
