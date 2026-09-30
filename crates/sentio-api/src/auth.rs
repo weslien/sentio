@@ -17,10 +17,49 @@ use crate::state::AppState;
 pub struct AuthContext {
     pub tenant_id: TenantId,
     pub scopes: Vec<String>,
+    /// Mailbox identity when the caller authenticated via a trusted-issuer
+    /// JWT (or an API key explicitly bound to one mailbox). `None` for
+    /// tenant-scoped service/admin keys: those see tenant-wide data as
+    /// before.
+    pub mailbox: Option<MailboxIdentity>,
+    /// True when the caller is a human/agent identity rather than a
+    /// tenant-wide service credential. User identities are restricted to
+    /// `USER_SCOPES` regardless of what their issuer claims.
+    pub is_user: bool,
+}
+
+/// The mailbox a JWT-authenticated caller owns. The tenant is derived
+/// from the mailbox's domain at resolution time.
+#[derive(Debug, Clone)]
+pub struct MailboxIdentity {
+    pub mailbox_id: uuid::Uuid,
+    pub address: String,
+}
+
+/// Scopes granted to user (mailbox) identities. Deliberately excludes
+/// every admin surface: domains, api keys, smtp credentials, webhooks,
+/// analytics, etc. remain service/admin-only.
+pub const USER_SCOPES: &[&str] = &["messages:read", "messages:send"];
+
+impl AuthContext {
+    pub fn user_scopes() -> &'static [&'static str] {
+        USER_SCOPES
+    }
 }
 
 impl AuthContext {
     pub fn require_scope(&self, scope: &str) -> Result<(), ApiError> {
+        // User (mailbox) identities are hard-clamped: their scopes are
+        // exactly USER_SCOPES no matter what the issuer claimed, so any
+        // admin surface (domains, api keys, webhooks, ...) is closed.
+        if self.is_user {
+            if Self::user_scopes().contains(&scope) {
+                return Ok(());
+            }
+            return Err(ApiError::Auth(format!(
+                "user identities cannot be granted scope: {scope}"
+            )));
+        }
         if self.scopes.iter().any(|s| s == scope || s == "*") {
             Ok(())
         } else {
@@ -76,6 +115,8 @@ impl FromRequestParts<AppState> for AuthContext {
                     return Ok(AuthContext {
                         tenant_id: record.tenant_id,
                         scopes: record.scopes,
+                        mailbox: None,
+                        is_user: false,
                     });
                 }
                 Err(sentio_core::error::SentioError::Auth(_)) => {}
@@ -97,29 +138,85 @@ impl FromRequestParts<AppState> for AuthContext {
                     if record.expires_at < chrono::Utc::now() {
                         return Err(ApiError::Auth("token has expired".into()));
                     }
-                    Ok(AuthContext {
+                    return Ok(AuthContext {
                         tenant_id: record.tenant_id,
                         scopes: record.scopes,
-                    })
+                        mailbox: None,
+                        is_user: false,
+                    });
                 }
-                // A token that matches no row is a client error, not an
-                // outage. The two repositories disagree on how they say
-                // "no such row": PgApiKeyRepository::verify returns Auth,
-                // PgOAuthTokenRepository::get_by_hash returns NotFound.
-                // Both mean the same thing here.
+                // Not a Sentio OAuth token. Fall through to trusted-issuer
+                // JWT verification below rather than rejecting here — the
+                // same bearer may be a platform identity token.
                 Err(
                     sentio_core::error::SentioError::Auth(_)
                     | sentio_core::error::SentioError::NotFound { .. },
-                ) => Err(ApiError::Auth("invalid or expired token".into())),
+                ) => {}
                 Err(e) => {
                     tracing::error!("oauth token lookup failed: {e}");
-                    Err(ApiError::Internal(
+                    return Err(ApiError::Internal(
                         "authentication backend unavailable".into(),
-                    ))
+                    ));
                 }
             }
+
+            // Trusted-issuer JWT (platform identity: Dex users, evroc-passport
+            // EIT agents). Falls through here only when the token is not a
+            // Sentio API key or Sentio-issued OAuth token. Also used when the
+            // OAuth lookup found no row: fall through to JWT verification
+            // before rejecting (the NotFound arm above returns the generic
+            // 401 only after this path declines the token).
+            if state.oidc_verifier().is_empty() {
+                return Err(ApiError::Auth("invalid or expired token".into()));
+            }
+            let claims = match state.oidc_verifier().verify(token).await {
+                Ok(c) => c,
+                Err(ApiError::Auth(msg)) => return Err(ApiError::Auth(msg)),
+                Err(e) => return Err(e),
+            };
+            resolve_mailbox_identity(&state.pool, &claims).await
         }
     }
+}
+
+/// Map a verified platform identity to its mailbox. Exactly one row in
+/// `mailbox_identities` must bind (issuer, subject) to a mailbox; the
+/// mailbox's domain determines the tenant. Unknown identities are a 401:
+/// an authenticated platform user who has not been provisioned a mailbox
+/// (or whose org has no mail yet) gets a precise error, not tenant access.
+async fn resolve_mailbox_identity(
+    pool: &sqlx::PgPool,
+    claims: &crate::oidc::IdTokenClaims,
+) -> Result<AuthContext, ApiError> {
+    let record = sqlx::query!(
+        "SELECT m.id AS mailbox_id, m.address, m.tenant_id, m.status \
+         FROM mailbox_identities mi \
+         JOIN mailboxes m ON m.id = mi.mailbox_id \
+         WHERE mi.issuer = $1 AND mi.subject = $2",
+        claims.iss,
+        claims.sub,
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("mailbox identity lookup failed: {e}");
+        ApiError::Internal("authentication backend unavailable".into())
+    })?
+    .ok_or_else(|| ApiError::Auth("authenticated identity has no mailbox in this system".into()))?;
+
+    if record.status != "active" {
+        return Err(ApiError::Auth("mailbox is not active".into()));
+    }
+
+    Ok(AuthContext {
+        tenant_id: TenantId(record.tenant_id),
+        scopes: USER_SCOPES.iter().map(|s| s.to_string()).collect(),
+        mailbox: Some(MailboxIdentity {
+            mailbox_id: record.mailbox_id,
+            address: record.address,
+        }),
+        is_user: true,
+    })
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

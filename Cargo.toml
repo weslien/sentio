@@ -73,6 +73,9 @@ mail-parser = "0.11.2"
 mail-auth = { version = "0.13", features = ["arc"] }
 mail-builder = "1.0"
 
+# JWT (ES256) verification for trusted OIDC issuers (platform identity tokens)
+p256 = { version = "0.13", features = ["ecdsa"] }
+
 # Networking
 ipnetwork = "0.21"
 
@@ -133,7 +136,7 @@ rustls-pki-types = "1"
 rustls-pemfile = "2"
 argon2 = "0.6"
 ed25519-dalek = { version = "3", features = ["rand_core"] }
-rsa = { version = "0.9", features = ["pkcs5"] }
+rsa = { version = "0.9", features = ["pkcs5", "sha2"] }
 
 # Random
 rand = "0.10"

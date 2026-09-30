@@ -12,11 +12,11 @@
 
 use sentio_core::tenant::TenantId;
 use sentio_core::traits::{
-    ApiKeyRepository, InboundRouteRepository, NewOAuthClient, NewSmtpCredential,
+    ApiKeyRepository, InboundRouteRepository, MessageRepository, NewOAuthClient, NewSmtpCredential,
     OAuthClientRepository, SmtpCredentialRepository,
 };
 use sentio_store::postgres::{
-    PgApiKeyRepository, PgInboundRouteRepository, PgOAuthClientRepository,
+    PgApiKeyRepository, PgInboundRouteRepository, PgMessageRepository, PgOAuthClientRepository,
     PgSmtpCredentialRepository,
 };
 
@@ -398,4 +398,94 @@ async fn inbound_route_delete_cannot_cross_tenants() {
         .expect("own delete works");
     cleanup_tenant(&pool, tenant_a).await;
     cleanup_tenant(&pool, tenant_b).await;
+}
+
+// ── Mailbox isolation (message address filter) ─────────────────────────────────
+
+#[tokio::test]
+async fn message_list_address_filter_returns_only_own_mail() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+
+    let tenant = create_tenant(&pool).await;
+    let m = marker();
+
+    // One domain for the tenant (required by messages FK).
+    let _ = sqlx::query("INSERT INTO domains (id, tenant_id, domain_name, use_for_receiving, use_for_sending, status, verification_token) VALUES ($1, $2, $3, true, true, 'verified', $4)")
+        .bind(uuid::Uuid::new_v4())
+        .bind(tenant.0)
+        .bind(format!("{m}.example"))
+        .bind(format!("tok-{m}"))
+        .execute(&pool)
+        .await
+        .expect("insert domain");
+
+    let insert_message = |envelope_to: Vec<String>, header_to: Vec<String>| {
+        let pool = pool.clone();
+        let tenant = tenant.0;
+        let m = m.clone();
+        async move {
+            let id = uuid::Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO messages (id, tenant_id, direction, envelope_from, envelope_to, header_to, status) \
+                 VALUES ($1, $2, 'inbound', 'outside@example', $3, $4, 'delivered')",
+            )
+            .bind(id)
+            .bind(tenant)
+            .bind(envelope_to)
+            .bind(header_to)
+            .execute(&pool)
+            .await
+            .expect("insert message");
+            id
+        }
+    };
+
+    // alice's mail, bob's mail, mail to both.
+    let _alice = insert_message(
+        vec![format!("alice@{m}.example")],
+        vec![format!("alice@{m}.example")],
+    )
+    .await;
+    let _bob = insert_message(
+        vec![format!("bob@{m}.example")],
+        vec![format!("bob@{m}.example")],
+    )
+    .await;
+    let _both = insert_message(
+        vec![format!("alice@{m}.example"), format!("bob@{m}.example")],
+        vec![format!("alice@{m}.example")],
+    )
+    .await;
+
+    let repo = PgMessageRepository::new(pool.clone());
+    let records = repo
+        .list(
+            tenant,
+            sentio_core::traits::MessageFilter {
+                status: None,
+                direction: None,
+                from: chrono::Utc::now() - chrono::Duration::hours(24),
+                to: chrono::Utc::now() + chrono::Duration::hours(1),
+                limit: 100,
+                offset: 0,
+                address: Some(format!("alice@{m}.example")),
+            },
+        )
+        .await
+        .expect("list with address filter");
+
+    let bob_mail = records.iter().any(|r| {
+        r.envelope_to.iter().any(|a| a.contains("bob@"))
+            && !r.envelope_to.iter().any(|a| a.contains("alice"))
+    });
+    assert!(!bob_mail, "alice's view must not include bob-only mail");
+    assert_eq!(
+        records.len(),
+        2,
+        "alice sees exactly her mail + shared mail, not bob's"
+    );
+
+    cleanup_tenant(&pool, tenant).await;
 }

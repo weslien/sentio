@@ -34,6 +34,7 @@ hmac.workspace = true
 pbkdf2.workspace = true
 ed25519-dalek.workspace = true
 rsa.workspace = true
+p256.workspace = true
 thiserror.workspace = true
 governor.workspace = true
 bytes.workspace = true

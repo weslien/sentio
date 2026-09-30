@@ -4,6 +4,7 @@ pub mod error_capture;
 pub mod errors;
 pub mod extract;
 pub mod middleware;
+pub mod oidc;
 pub mod openapi;
 pub mod response;
 pub mod routes;

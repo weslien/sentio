@@ -200,6 +200,77 @@ impl MessageRepository for PgMessageRepository {
         // Partition-aware: always filters on created_at range for pruning.
         // Each arm returns Vec<MessageRecord> directly because sqlx::query!
         // generates distinct anonymous Record types per query.
+        //
+        // Mailbox-scoped (user identity) queries take a dedicated arm: the
+        // address predicate subsumes the status/direction filters the API
+        // would otherwise accept, keeping user mode to exactly one query.
+        if let Some(address) = filter.address.clone() {
+            let rows = sqlx::query!(
+                "SELECT id, tenant_id, domain_id, direction, envelope_from, envelope_to, \
+                        header_from, header_to, header_cc, header_reply_to, subject, \
+                        message_id_header, status, tags, metadata, message_size, \
+                        raw_eml_key, spam_score, spam_action, send_at, \
+                        dsn_ret, dsn_envid, dsn_notify, dsn_orcpt, \
+                        created_at, delivered_at, bounced_at, \
+                        llm_category, llm_summary, llm_classified_at \
+                 FROM messages \
+                 WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3 \
+                   AND ( \
+                     $4::text = ANY(envelope_to) OR \
+                     $4::text = ANY(header_to) OR $4::text = ANY(header_cc) OR \
+                     envelope_from = $4::text OR header_from = $4::text \
+                   ) \
+                 ORDER BY created_at DESC LIMIT $5 OFFSET $6",
+                tenant_id.0,
+                filter.from,
+                filter.to,
+                address,
+                filter.limit,
+                filter.offset,
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| SentioError::Database(e.to_string()))?;
+
+            return Ok(rows
+                .into_iter()
+                .map(|r| {
+                    parse_message_row(
+                        r.id,
+                        r.tenant_id,
+                        r.domain_id,
+                        r.direction,
+                        r.envelope_from,
+                        r.envelope_to,
+                        r.header_from,
+                        r.header_to,
+                        r.header_cc,
+                        r.header_reply_to,
+                        r.subject,
+                        r.message_id_header,
+                        r.status,
+                        r.tags,
+                        r.metadata,
+                        r.message_size,
+                        r.raw_eml_key,
+                        r.spam_score,
+                        r.spam_action,
+                        r.send_at,
+                        r.dsn_ret,
+                        r.dsn_envid,
+                        r.dsn_notify,
+                        r.dsn_orcpt,
+                        r.created_at,
+                        r.delivered_at,
+                        r.bounced_at,
+                        r.llm_category,
+                        r.llm_summary,
+                        r.llm_classified_at,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?);
+        }
+
         match (filter.status, filter.direction) {
             (Some(status), Some(direction)) => {
                 let s = status.to_string();

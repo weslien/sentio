@@ -718,6 +718,10 @@ pub struct AuthConfig {
     pub bimi_vmc_required: bool,
     #[serde(default)]
     pub fbl: FblConfig,
+    /// Platform identity: trusted OIDC issuers whose JWTs are accepted as
+    /// API bearer credentials, mapped to a single mailbox per subject.
+    #[serde(default)]
+    pub oidc: OidcAuthConfig,
 }
 
 impl Default for AuthConfig {
@@ -734,6 +738,7 @@ impl Default for AuthConfig {
             bimi_check_inbound: true,
             bimi_vmc_required: false,
             fbl: FblConfig::default(),
+            oidc: OidcAuthConfig::default(),
         }
     }
 }
@@ -1505,6 +1510,37 @@ fn apply_single_override(
         }
         ["AUTH", "FBL", "ENABLED"] => config.auth.fbl.enabled = parse_env(full_key, value)?,
         ["AUTH", "FBL", "FBL_ADDRESS"] => config.auth.fbl.fbl_address = value.to_string(),
+        // Auth → oidc (platform identity). Trusted issuers are supplied via
+        // TOML (arrays of tables do not fit the flat env-override scheme);
+        // these env keys provide a comma-separated fallback for single-issuer
+        // deployments: SENTIO__AUTH__OIDC__TRUSTED_ISSUERS /
+        // SENTIO__AUTH__OIDC__TRUSTED_JWKS_URLS (matched by index).
+        ["AUTH", "OIDC", "TRUSTED_ISSUERS"] => {
+            let issuers: Vec<String> = parse_csv(value);
+            config.auth.oidc.trusted = issuers
+                .into_iter()
+                .map(|issuer| TrustedIssuerConfig {
+                    issuer,
+                    jwks_url: String::new(),
+                    audience: None,
+                })
+                .collect();
+        }
+        ["AUTH", "OIDC", "TRUSTED_JWKS_URLS"] => {
+            let urls: Vec<String> = parse_csv(value);
+            for (slot, url) in config.auth.oidc.trusted.iter_mut().zip(urls) {
+                slot.jwks_url = url;
+            }
+        }
+        ["AUTH", "OIDC", "TRUSTED_AUDIENCES"] => {
+            let audiences: Vec<Option<String>> = parse_csv(value)
+                .into_iter()
+                .map(|v| (!v.is_empty()).then_some(v))
+                .collect();
+            for (slot, aud) in config.auth.oidc.trusted.iter_mut().zip(audiences) {
+                slot.audience = aud;
+            }
+        }
         ["AUTH", "FBL", "AUTO_SUPPRESS"] => {
             config.auth.fbl.auto_suppress = parse_env(full_key, value)?;
         }
@@ -2054,5 +2090,34 @@ mod tests {
         let err = config.validate().unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("acme.email"), "{msg}");
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Platform identity (trusted OIDC issuers)
+// ──────────────────────────────────────────────────────────────────────────────
+/// Trusted OIDC issuers whose JWTs Sentio accepts as bearer tokens. Each
+/// verified (iss, sub) is mapped to one mailbox via `mailbox_identities`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct OidcAuthConfig {
+    pub trusted: Vec<TrustedIssuerConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TrustedIssuerConfig {
+    /// Exact `iss` claim value that must appear in accepted tokens.
+    pub issuer: String,
+    /// JWKS endpoint serving the issuer's public signing keys.
+    pub jwks_url: String,
+    /// Required `aud` claim for this issuer's tokens. Dex mints
+    /// audience-scoped tokens; leaving this unset accepts any audience.
+    #[serde(default)]
+    pub audience: Option<String>,
+}
+
+impl Default for OidcAuthConfig {
+    fn default() -> Self {
+        Self { trusted: vec![] }
     }
 }

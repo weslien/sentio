@@ -15,6 +15,8 @@ fn ctx_for(tenant: uuid::Uuid) -> AuthContext {
     AuthContext {
         tenant_id: TenantId(tenant),
         scopes: vec![],
+        mailbox: None,
+        is_user: false,
     }
 }
 

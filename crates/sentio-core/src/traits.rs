@@ -673,6 +673,11 @@ pub struct MessageFilter {
     pub to: DateTime<Utc>,
     pub limit: i64,
     pub offset: i64,
+    /// When set, only messages involving this address are returned: mail
+    /// addressed to it (envelope_to / header_to / header_cc) or sent from
+    /// it (envelope_from / header_from). Used for per-mailbox isolation of
+    /// user identities; service/admin keys leave it None.
+    pub address: Option<String>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

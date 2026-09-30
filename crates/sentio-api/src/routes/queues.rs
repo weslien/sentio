@@ -213,6 +213,7 @@ pub async fn list_deferred(
         to,
         limit: params.limit,
         offset: params.offset,
+        address: None,
     };
 
     let msg_repo = PgMessageRepository::new(state.pool.clone());

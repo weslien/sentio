@@ -639,6 +639,17 @@ pub async fn send_message(
         ));
     }
 
+    // User identities may only send from their own mailbox.
+    if let Some(mailbox) = auth.mailbox.as_ref() {
+        let from_spec = extract_addr_spec(&body.from);
+        if !from_spec.eq_ignore_ascii_case(&mailbox.address) {
+            return Err(ApiError::Validation(format!(
+                "user identities may only send from their own mailbox ({}), got {}",
+                mailbox.address, from_spec
+            )));
+        }
+    }
+
     // Validate every address field at the API boundary so bad input
     // fails fast with a 422 instead of getting queued, dispatched
     // hours later, and bouncing into the audit trail.
@@ -1376,6 +1387,18 @@ pub async fn send_raw(
         return Err(ApiError::Validation("from and to are required".into()));
     }
 
+    // User identities may only send from their own mailbox. Enforced BEFORE
+    // domain validation so a user cannot probe which domains the tenant owns.
+    if let Some(mailbox) = auth.mailbox.as_ref() {
+        let from_spec = extract_addr_spec(&body.from);
+        if !from_spec.eq_ignore_ascii_case(&mailbox.address) {
+            return Err(ApiError::Validation(format!(
+                "user identities may only send from their own mailbox ({}), got {}",
+                mailbox.address, from_spec
+            )));
+        }
+    }
+
     validate_email_field("from", &body.from)?;
     validate_email_list("to", &body.to)?;
 
@@ -1531,6 +1554,11 @@ pub async fn list_messages(
     let limit = params.limit.clamp(1, 1000);
     let offset = params.offset.max(0);
 
+    // User identities are clamped to their own mailbox: the API-level
+    // `to`/`from` query params (arbitrary addresses) are ignored for them
+    // and replaced by the mailbox address.
+    let address = auth.mailbox.as_ref().map(|m| m.address.clone());
+
     let filter = MessageFilter {
         status: params.status,
         direction: params.direction,
@@ -1538,6 +1566,7 @@ pub async fn list_messages(
         to,
         limit,
         offset,
+        address,
     };
 
     let msg_repo = PgMessageRepository::new(state.pool.clone());
@@ -1571,8 +1600,33 @@ pub async fn get_message(
 
     let msg_repo = PgMessageRepository::new(state.pool.clone());
     let record = msg_repo.get(auth.tenant_id, MessageId(id)).await?;
+    ensure_message_visible_to_user(&auth, &record)?;
 
     Ok(data(MessageResponse::from(record)))
+}
+
+/// Enforce per-mailbox visibility for user identities: a user may only
+/// touch messages their mailbox is party to (recipient in envelope or
+/// headers, or sender). Tenant-scoped service/admin keys are unaffected.
+/// Returns 404 (not 404-with-hint) so existence of others' mail doesn't leak.
+fn ensure_message_visible_to_user(
+    auth: &AuthContext,
+    record: &MessageRecord,
+) -> Result<(), ApiError> {
+    let Some(mailbox) = auth.mailbox.as_ref() else {
+        return Ok(());
+    };
+    let addr = mailbox.address.as_str();
+    let involved = record.envelope_to.iter().any(|a| a == addr)
+        || record.header_to.iter().any(|a| a == addr)
+        || record.header_cc.iter().any(|a| a == addr)
+        || record.envelope_from == addr
+        || record.header_from.as_deref() == Some(addr);
+    if involved {
+        Ok(())
+    } else {
+        Err(ApiError::NotFound("message not found".into()))
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1599,6 +1653,7 @@ pub async fn get_message_raw(
 
     let msg_repo = PgMessageRepository::new(state.pool.clone());
     let record = msg_repo.get(auth.tenant_id, MessageId(id)).await?;
+    ensure_message_visible_to_user(&auth, &record)?;
 
     let fid = record
         .raw_eml_key
@@ -1643,9 +1698,11 @@ pub async fn get_message_events(
 ) -> Result<impl IntoResponse, ApiError> {
     auth.require_scope("messages:read")?;
 
-    // Verify message belongs to tenant
+    // Verify message belongs to tenant AND (for user identities) to the
+    // caller's mailbox.
     let msg_repo = PgMessageRepository::new(state.pool.clone());
-    msg_repo.get(auth.tenant_id, MessageId(id)).await?;
+    let record = msg_repo.get(auth.tenant_id, MessageId(id)).await?;
+    ensure_message_visible_to_user(&auth, &record)?;
 
     // Fetch events
     let event_repo = PgMessageEventRepository::new(state.pool.clone());
